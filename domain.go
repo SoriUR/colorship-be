@@ -2,7 +2,15 @@ package main
 
 // ChatRequest – структура запроса от iOS, содержащая промт
 type ChatRequest struct {
-	Prompt string `json:"prompt"`
+	DeviceID string `json:"device_id"`
+	ChatID   string `json:"chat_id"`
+	Prompt   string `json:"prompt"`
+}
+
+// ChatResponse – тело ответа клиенту
+type ChatResponse struct {
+	ChatID   string `json:"chat_id"`
+	Response string `json:"response"`
 }
 
 // Message – структура сообщения для OpenAI
