@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 )
@@ -37,11 +38,74 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Неверный формат JSON", http.StatusBadRequest)
 			return
 		}
+		log.Println("Получен POST-запрос:", req)
 
 		// Проверяем, что user_id передан
 		userID := req.UserID
 		if userID == "" {
 			http.Error(w, "user_id обязателен", http.StatusBadRequest)
+			return
+		}
+		log.Println("Проверка лимита сообщений для user_id:", userID)
+
+		// Проверяем, есть ли уже лимит сообщений на текущий месяц
+		var available bool
+		log.Println("Проверяем наличие активного лимита сообщений...")
+		err := db.QueryRow(`
+			SELECT messages_sent < messages_limit
+			FROM messages_limit
+			WHERE user_id = $1 AND period_start <= now() AND period_end > now()
+			LIMIT 1
+		`, userID).Scan(&available)
+
+		if err == sql.ErrNoRows {
+			// Если лимита нет — проверяем, есть ли бесплатная подписка
+			log.Println("Нет активного лимита, проверяем бесплатную подписку...")
+			var subID string
+			err = db.QueryRow(`
+				SELECT id
+				FROM subscriptions
+				WHERE user_id = $1 AND product_name = 'free'
+					AND period_start <= now() AND period_end > now()
+				LIMIT 1
+			`, userID).Scan(&subID)
+
+			if err == nil {
+				// Создаём лимит на этот месяц для бесплатного плана
+				log.Println("Создаём новый лимит сообщений для бесплатного тарифа")
+				_, err = db.Exec(`
+					INSERT INTO messages_limit (
+						id, user_id, subscription_id, period_start, period_end,
+						product_name, messages_limit, messages_sent
+					) VALUES (
+						gen_random_uuid(), $1, $2,
+						date_trunc('month', now()), date_trunc('month', now()) + interval '1 month',
+						'free', 5, 0
+					)
+				`, userID, subID)
+
+				if err != nil {
+					log.Println("Ошибка при создании лимита сообщений:", err)
+					http.Error(w, "Не удалось создать лимит сообщений: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				available = true
+				log.Println("Лимит не превышен, сообщений осталось:", available)
+			} else {
+				log.Println("У пользователя нет активной бесплатной подписки")
+				http.Error(w, "Нет активной бесплатной подписки", http.StatusForbidden)
+				return
+			}
+		} else if err != nil {
+			log.Println("Ошибка при проверке лимита:", err)
+			http.Error(w, "Ошибка проверки лимита сообщений: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !available {
+			log.Println("Достигнут лимит сообщений")
+			http.Error(w, "Достигнут лимит сообщений в этом периоде", http.StatusForbidden)
 			return
 		}
 
@@ -82,6 +146,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Сохраняем сообщение пользователя
+		log.Println("Сохраняем сообщение пользователя")
 		if err := saveMessage(chatID, "user", req.Prompt); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -95,6 +160,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Отправляем историю в OpenAI
+		log.Println("Отправляем запрос в OpenAI")
 		openaiReq := OpenAIRequest{
 			Model:    "gpt-3.5-turbo", // или "gpt-4", если есть доступ
 			Messages: messages,
@@ -146,11 +212,50 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assistantMsg := openaiResp.Choices[0].Message.Content
+		log.Println("Ответ от OpenAI получен")
 
 		// Сохраняем ответ ассистента
 		if err := saveMessage(chatID, "assistant", assistantMsg); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Увеличиваем счётчик отправленных сообщений
+		log.Println("Увеличиваем счётчик отправленных сообщений")
+		var currentSent int
+		err = db.QueryRow(`
+			SELECT messages_sent
+			FROM messages_limit
+			WHERE user_id = $1 AND period_start <= now() AND period_end > now()
+			LIMIT 1
+		`, userID).Scan(&currentSent)
+		if err != nil {
+			log.Println("Ошибка при получении текущего счётчика сообщений:", err)
+		} else {
+			log.Println("Текущее значение messages_sent до увеличения:", currentSent)
+		}
+
+		_, err = db.Exec(`
+			UPDATE messages_limit
+			SET messages_sent = messages_sent + 1
+			WHERE user_id = $1 AND period_start <= now() AND period_end > now()
+		`, userID)
+		if err != nil {
+			log.Println("Ошибка при обновлении счётчика сообщений:", err)
+			http.Error(w, "Ошибка обновления счётчика сообщений: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = db.QueryRow(`
+			SELECT messages_sent
+			FROM messages_limit
+			WHERE user_id = $1 AND period_start <= now() AND period_end > now()
+			LIMIT 1
+		`, userID).Scan(&currentSent)
+		if err != nil {
+			log.Println("Ошибка при получении messages_sent после обновления:", err)
+		} else {
+			log.Println("messages_sent после увеличения:", currentSent)
 		}
 
 		// Возвращаем ответ клиенту (вместе с chat_id)
@@ -160,6 +265,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(respData)
+		log.Println("Ответ пользователю отправлен:", assistantMsg)
 		return
 
 	default:
