@@ -35,9 +35,11 @@ func main() {
 	}
 	log.Println("Подключение к Supabase установлено!")
 
-	http.HandleFunc("/startup", startupHandler)
-	http.HandleFunc("/chat", chatHandler)
-	http.HandleFunc("/chats", chatsHandler)
+	http.HandleFunc("/api/launch", launchHandler)
+	http.HandleFunc("/api/sign_up", signUpHandler)
+	http.HandleFunc("/api/chat", chatHandler)
+	http.HandleFunc("/api/chats", chatsHandler)
+	http.HandleFunc("/api/webhook/revenuecat", revenueCatWebhookHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
