@@ -93,12 +93,11 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		chatID = newChatID
 
-		systemContentBytes, err := os.ReadFile(".gpt_prompt")
-		if err != nil {
+		systemContent := os.Getenv("GPT_PROMPT")
+		if systemContent == "" {
 			http.Error(w, "Не удалось прочитать system prompt: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		systemContent := string(systemContentBytes)
 
 		if err := saveMessage(chatID, "system", systemContent); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
