@@ -10,8 +10,7 @@ import (
 )
 
 func revenueCatWebhookHandler(w http.ResponseWriter, r *http.Request) {
-	token := os.Getenv("REVENUE_CAT_WEBHOOK_TOKEN")
-	secretToken := "Bearer " + token
+	secretToken := "Bearer " + os.Getenv("REVENUE_CAT_WEBHOOK_TOKEN")
 
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != secretToken {
@@ -64,9 +63,9 @@ func handleRevenueCatEvent(data []byte) {
 
 			var count int
 			switch productID {
-			case "messages_10":
+			case "com.40apps.redflagged.messages.10":
 				count = 10
-			case "messages_100":
+			case "com.40apps.redflagged.messages.100":
 				count = 100
 			default:
 				log.Printf("Неизвестный product_id: %s", productID)
