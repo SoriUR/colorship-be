@@ -23,7 +23,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		handleChatPost(w, r)
 	default:
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		writeError(w, "method_not_allowed", "Метод не поддерживается", nil, nil)
 	}
 }
 
@@ -31,32 +31,32 @@ func handleChatGet(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		log.Println("handleChatGet error: Параметр chat_id обязателен")
-		http.Error(w, "Параметр chat_id обязателен", http.StatusBadRequest)
+		writeError(w, "missing_chat_id", "Параметр chat_id обязателен", nil, nil)
 		return
 	}
 	msgs, err := getChatMessages(chatID)
 	if err != nil {
 		log.Println("handleChatGet error: Ошибка получения сообщений")
-		http.Error(w, "Ошибка получения сообщений: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка получения сообщений", nil, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(msgs); err != nil {
-		http.Error(w, "Ошибка кодирования JSON: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, "json_encode_error", "Ошибка кодирования JSON", nil, err)
 	}
 }
 
 func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Неверный формат JSON", http.StatusBadRequest)
+		writeError(w, "json_decode_error", "Неверный формат JSON", nil, err)
 		return
 	}
 	log.Println("Получен POST-запрос:", req)
 
 	userID, err := getUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeError(w, "unauthorized", err.Error(), nil, err)
 		return
 	}
 
@@ -68,16 +68,16 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	`, userID).Scan(&freeLeft, &paidLeft)
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка получения лимита сообщений")
-		http.Error(w, "Ошибка получения лимита сообщений", http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка получения лимита сообщений", nil, err)
 		return
 	}
 	if freeLeft <= 0 && paidLeft <= 0 {
-		writeError(w, "no_messages", "У вас закончились все доступные сообщения", nil)
+		writeError(w, "no_messages", "У вас закончились все доступные сообщения", nil, nil)
 		return
 	}
 
 	if len(req.ImagePaths) > 0 && paidLeft == 0 {
-		writeError(w, "images_not_allowed_for_free", "Изображения доступны только при наличии платных сообщений", nil)
+		writeError(w, "images_not_allowed_for_free", "Изображения доступны только при наличии платных сообщений", nil, nil)
 		return
 	}
 
@@ -93,20 +93,20 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		newChatID, err := createChat(userID, title)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, "db_error", "Ошибка создания чата", nil, err)
 			return
 		}
 		chatID = newChatID
 
 		systemBytes, err := os.ReadFile(".prompt")
 		if err != nil {
-			http.Error(w, "Не удалось прочитать .prompt файл: "+err.Error(), http.StatusInternalServerError)
+			writeError(w, "file_read_error", "Не удалось прочитать .prompt файл", nil, err)
 			return
 		}
 		systemContent := string(systemBytes)
 
 		if err := saveMessage(chatID, "system", systemContent); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, "db_error", "Ошибка сохранения system-сообщения", nil, err)
 			return
 		}
 	} else {
@@ -114,35 +114,35 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		err := db.QueryRow(`SELECT user_id FROM chats WHERE id = $1`, chatID).Scan(&ownerID)
 		if err == sql.ErrNoRows {
 			log.Println("handleChatPost error: Чат не найден")
-			http.Error(w, "Чат не найден", http.StatusNotFound)
+			writeError(w, "not_found", "Чат не найден", nil, nil)
 			return
 		} else if err != nil {
 			log.Println("handleChatPost error: Ошибка проверки чата")
-			http.Error(w, "Ошибка проверки чата: "+err.Error(), http.StatusInternalServerError)
+			writeError(w, "db_error", "Ошибка проверки чата", nil, err)
 			return
 		}
 		if ownerID != userID {
 			log.Println("handleChatPost error: Этот чат не принадлежит user_id")
-			http.Error(w, "Этот чат не принадлежит user_id", http.StatusForbidden)
+			writeError(w, "forbidden", "Этот чат не принадлежит user_id", nil, nil)
 			return
 		}
 	}
 
 	if err := saveMessage(chatID, "user", req.Prompt, req.ImagePaths); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка сохранения сообщения пользователя", nil, err)
 		return
 	}
 
 	messages, err := getChatMessages(chatID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка получения сообщений", nil, err)
 		return
 	}
 
 	openaiAPIKey := os.Getenv("OPENAI_API_KEY")
 	if openaiAPIKey == "" {
 		log.Println("handleChatPost error: Сервер не настроен (отсутствует API ключ)")
-		http.Error(w, "Сервер не настроен (отсутствует API ключ)", http.StatusInternalServerError)
+		writeError(w, "openai_not_configured", "Сервер не настроен (отсутствует API ключ)", nil, nil)
 		return
 	}
 
@@ -182,7 +182,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		signedURL, err := getSignedURL(path)
 		if err != nil {
 			log.Println("handleChatPost error: Ошибка получения signed URL")
-			http.Error(w, "Ошибка получения signed URL: "+err.Error(), http.StatusInternalServerError)
+			writeError(w, "supabase_signed_url_error", "Ошибка получения signed URL", nil, err)
 			return
 		}
 		visionContents = append(visionContents, VisionContentItem{
@@ -210,14 +210,14 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	jsonData, err := json.Marshal(visionReq)
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка формирования JSON для OpenAI")
-		http.Error(w, "Ошибка формирования JSON для OpenAI", http.StatusInternalServerError)
+		writeError(w, "json_encode_error", "Ошибка формирования JSON для OpenAI", nil, err)
 		return
 	}
 
 	apiReq, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка создания запроса к OpenAI")
-		http.Error(w, "Ошибка создания запроса к OpenAI", http.StatusInternalServerError)
+		writeError(w, "openai_error", "Ошибка создания запроса к OpenAI", nil, err)
 		return
 	}
 	apiReq.Header.Set("Content-Type", "application/json")
@@ -226,14 +226,14 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	resp, err := client.Do(apiReq)
 	if err != nil {
-		http.Error(w, "Ошибка выполнения запроса к OpenAI", http.StatusInternalServerError)
+		writeError(w, "openai_error", "Ошибка выполнения запроса к OpenAI", nil, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, "Ошибка чтения ответа от OpenAI", http.StatusInternalServerError)
+		writeError(w, "openai_error", "Ошибка чтения ответа от OpenAI", nil, err)
 		return
 	}
 
@@ -248,13 +248,13 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	log.Printf("OpenAI raw response: %s", string(body))
 
 	if len(openaiResp.Choices) == 0 {
-		http.Error(w, "OpenAI не вернул ответа", http.StatusInternalServerError)
+		writeError(w, "openai_error", "OpenAI не вернул ответа", nil, nil)
 		return
 	}
 
 	assistantMsg := openaiResp.Choices[0].Message.Content
 	if err := saveMessage(chatID, "assistant", assistantMsg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка сохранения сообщения ассистента", nil, err)
 		return
 	}
 
@@ -266,7 +266,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка обновления счётчика сообщений")
-		http.Error(w, "Ошибка обновления счётчика сообщений: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, "db_error", "Ошибка обновления счётчика сообщений", nil, err)
 		return
 	}
 
