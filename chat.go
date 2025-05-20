@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 func chatHandler(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +85,9 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	if chatID == "" {
 		// Новый чат
 		title := req.Prompt
+		if title == "" {
+			title = "New Chat"
+		}
 		if len(title) > 50 {
 			title = title[:50]
 		}
@@ -93,11 +98,12 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		chatID = newChatID
 
-		systemContent := os.Getenv("GPT_PROMPT")
-		if systemContent == "" {
-			http.Error(w, "Не удалось прочитать system prompt: "+err.Error(), http.StatusInternalServerError)
+		systemBytes, err := os.ReadFile(".prompt")
+		if err != nil {
+			http.Error(w, "Не удалось прочитать .prompt файл: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		systemContent := string(systemBytes)
 
 		if err := saveMessage(chatID, "system", systemContent); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -122,7 +128,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := saveMessage(chatID, "user", req.Prompt); err != nil {
+	if err := saveMessage(chatID, "user", req.Prompt, req.ImagePaths); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -246,8 +252,6 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("8")
-
 	assistantMsg := openaiResp.Choices[0].Message.Content
 	if err := saveMessage(chatID, "assistant", assistantMsg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -265,8 +269,6 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Ошибка обновления счётчика сообщений: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	log.Println("9")
 
 	respData := ChatResponse{
 		ChatID:   chatID,
@@ -327,11 +329,15 @@ func getSignedURL(path string) (string, error) {
 }
 
 // saveMessage сохраняет сообщение в таблице messages.
-func saveMessage(chatID, role, content string) error {
+func saveMessage(chatID, role, content string, imagePaths ...[]string) error {
+	var images []string
+	if len(imagePaths) > 0 {
+		images = imagePaths[0]
+	}
 	_, err := db.Exec(`
-        INSERT INTO messages (chat_id, role, content)
-        VALUES ($1, $2, $3)
-    `, chatID, role, content)
+        INSERT INTO messages (chat_id, role, content, image_paths)
+        VALUES ($1, $2, $3, $4)
+    `, chatID, role, content, pq.Array(images))
 	if err != nil {
 		return fmt.Errorf("ошибка сохранения сообщения: %v", err)
 	}
@@ -352,12 +358,12 @@ func createChat(userID, title string) (string, error) {
 	return chatID, nil
 }
 
-// getChatMessages возвращает все сообщения из чата, отсортированные по времени (по возрастанию).
+// getChatMessages возвращает все сообщения из чата, отсортированные по времени (по возрастанию), кроме сообщений с role = 'system'.
 func getChatMessages(chatID string) ([]Message, error) {
 	rows, err := db.Query(`
-        SELECT role, content
+        SELECT role, content, image_paths
         FROM messages
-        WHERE chat_id = $1
+        WHERE chat_id = $1 AND role != 'system'
         ORDER BY created_at ASC
     `, chatID)
 	if err != nil {
@@ -368,7 +374,8 @@ func getChatMessages(chatID string) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.Role, &m.Content); err != nil {
+		err := rows.Scan(&m.Role, &m.Content, pq.Array(&m.ImagePaths))
+		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования сообщения: %v", err)
 		}
 		msgs = append(msgs, m)

@@ -13,8 +13,9 @@ type ChatResponse struct {
 }
 
 type Message struct {
-	Role    string `json:"role"`    // "system", "user", "assistant"
-	Content string `json:"content"` // текст сообщения
+	Role       string   `json:"role"`
+	Content    string   `json:"content"`
+	ImagePaths []string `json:"image_paths"`
 }
 
 type OpenAIRequest struct {

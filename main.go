@@ -40,6 +40,7 @@ func main() {
 	http.HandleFunc("/api/chat", chatHandler)
 	http.HandleFunc("/api/chats", chatsHandler)
 	http.HandleFunc("/api/webhook/revenuecat", revenueCatWebhookHandler)
+	http.HandleFunc("/api/confirmation", confirmationHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
