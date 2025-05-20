@@ -34,7 +34,7 @@ func handleChatGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "missing_chat_id", "Параметр chat_id обязателен", nil, nil)
 		return
 	}
-	msgs, err := getChatMessages(chatID)
+	msgs, err := getChatMessages(chatID, false)
 	if err != nil {
 		log.Println("handleChatGet error: Ошибка получения сообщений")
 		writeError(w, "db_error", "Ошибка получения сообщений", nil, err)
@@ -133,7 +133,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages, err := getChatMessages(chatID)
+	messages, err := getChatMessages(chatID, true)
 	if err != nil {
 		writeError(w, "db_error", "Ошибка получения сообщений", nil, err)
 		return
@@ -194,10 +194,11 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	model := "gpt-3.5-turbo"
-	if paidLeft > 0 {
-		model = "gpt-4o"
+	if paidLeft == 0 {
+		writeError(w, "gpt4_only", "Текущая модель требует платного доступа", nil, nil)
+		return
 	}
+	model := "gpt-4o"
 
 	visionReq := VisionRequest{
 		Model: model,
@@ -269,7 +270,6 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "db_error", "Ошибка обновления счётчика сообщений", nil, err)
 		return
 	}
-
 	respData := ChatResponse{
 		ChatID:   chatID,
 		Response: assistantMsg,
@@ -358,14 +358,18 @@ func createChat(userID, title string) (string, error) {
 	return chatID, nil
 }
 
-// getChatMessages возвращает все сообщения из чата, отсортированные по времени (по возрастанию), кроме сообщений с role = 'system'.
-func getChatMessages(chatID string) ([]Message, error) {
-	rows, err := db.Query(`
+// getChatMessages возвращает все сообщения из чата, отсортированные по времени (по возрастанию). Если includeSystem == false, исключает system-сообщения.
+func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
+	query := `
         SELECT role, content, image_paths
         FROM messages
-        WHERE chat_id = $1 AND role != 'system'
-        ORDER BY created_at ASC
-    `, chatID)
+        WHERE chat_id = $1`
+	if !includeSystem {
+		query += " AND role != 'system'"
+	}
+	query += " ORDER BY created_at ASC"
+
+	rows, err := db.Query(query, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка запроса сообщений: %v", err)
 	}
@@ -380,7 +384,6 @@ func getChatMessages(chatID string) ([]Message, error) {
 		}
 		msgs = append(msgs, m)
 	}
-	// Проверка на ошибку после обхода rows
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("ошибка обхода строк: %v", err)
 	}
