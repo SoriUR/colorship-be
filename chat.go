@@ -104,6 +104,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		systemContent := string(systemBytes)
+		log.Printf("Загруженный system prompt: %s", systemContent)
 
 		if err := saveMessage(chatID, "system", systemContent); err != nil {
 			writeError(w, "db_error", "Ошибка сохранения system-сообщения", nil, err)
@@ -194,11 +195,12 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if paidLeft == 0 {
-		writeError(w, "gpt4_only", "Текущая модель требует платного доступа", nil, nil)
-		return
+	var model string
+	if paidLeft > 0 {
+		model = "gpt-4o"
+	} else {
+		model = "gpt-3.5-turbo"
 	}
-	model := "gpt-4o"
 
 	visionReq := VisionRequest{
 		Model: model,
