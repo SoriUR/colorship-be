@@ -5,6 +5,7 @@ type ChatRequest struct {
 	ChatID     string   `json:"chat_id"` // если пустой, создаётся новый чат
 	Prompt     string   `json:"prompt"`
 	ImagePaths []string `json:"image_paths"`
+	VoicePaths []string `json:"voice_paths"`
 }
 
 type ChatResponse struct {
@@ -13,9 +14,12 @@ type ChatResponse struct {
 }
 
 type Message struct {
-	Role       string   `json:"role"`
-	Content    string   `json:"content"`
-	ImagePaths []string `json:"image_paths"`
+	Role              string   `json:"role"`
+	Content           string   `json:"content"`
+	ImagePaths        []string `json:"image_paths"`
+	VoicePaths        []string `json:"voice_paths"`
+	VoiceTranscription string   `json:"voice_transcription,omitempty"`
+	Timestamp         string   `json:"timestamp"`
 }
 
 type OpenAIRequest struct {

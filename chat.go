@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strings"
@@ -81,6 +83,11 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.VoicePaths) > 0 && paidLeft == 0 {
+		writeError(w, "voice_not_allowed_for_free", "Голосовые сообщения доступны только при наличии платных сообщений", nil, nil)
+		return
+	}
+
 	chatID := req.ChatID
 	if chatID == "" {
 		// Новый чат
@@ -106,7 +113,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		systemContent := string(systemBytes)
 		log.Printf("Загруженный system prompt: %s", systemContent)
 
-		if err := saveMessage(chatID, "system", systemContent); err != nil {
+		if err := saveMessage(chatID, "system", systemContent, nil); err != nil {
 			writeError(w, "db_error", "Ошибка сохранения system-сообщения", nil, err)
 			return
 		}
@@ -129,7 +136,19 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := saveMessage(chatID, "user", req.Prompt, req.ImagePaths); err != nil {
+	// Транскрибируем голосовые сообщения один раз для текущего запроса
+	var currentVoiceTranscription string
+	if len(req.VoicePaths) > 0 {
+		transcription, err := transcribeVoiceFiles(req.VoicePaths)
+		if err != nil {
+			log.Println("handleChatPost error: Ошибка транскрипции голоса")
+			writeError(w, "voice_transcription_error", "Ошибка транскрипции голосового сообщения", nil, err)
+			return
+		}
+		currentVoiceTranscription = transcription
+	}
+
+	if err := saveMessageWithTranscription(chatID, "user", req.Prompt, req.ImagePaths, req.VoicePaths, currentVoiceTranscription); err != nil {
 		writeError(w, "db_error", "Ошибка сохранения сообщения пользователя", nil, err)
 		return
 	}
@@ -170,6 +189,14 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 				Text: msg.Content,
 			})
 		}
+
+		// Добавляем кэшированные транскрипции голосовых сообщений из истории
+		if msg.VoiceTranscription != "" {
+			visionContents = append(visionContents, VisionContentItem{
+				Type: "text",
+				Text: msg.VoiceTranscription,
+			})
+		}
 	}
 
 	// Добавляем текущий prompt
@@ -192,6 +219,14 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 				URL:    signedURL,
 				Detail: "auto",
 			},
+		})
+	}
+
+	// Добавляем транскрипцию текущих голосовых сообщений
+	if currentVoiceTranscription != "" {
+		visionContents = append(visionContents, VisionContentItem{
+			Type: "text",
+			Text: currentVoiceTranscription,
 		})
 	}
 
@@ -256,7 +291,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	assistantMsg := openaiResp.Choices[0].Message.Content
-	if err := saveMessage(chatID, "assistant", assistantMsg); err != nil {
+	if err := saveMessage(chatID, "assistant", assistantMsg, nil); err != nil {
 		writeError(w, "db_error", "Ошибка сохранения сообщения ассистента", nil, err)
 		return
 	}
@@ -330,16 +365,71 @@ func getSignedURL(path string) (string, error) {
 	return baseURL + response.SignedURL, nil
 }
 
-// saveMessage сохраняет сообщение в таблице messages.
-func saveMessage(chatID, role, content string, imagePaths ...[]string) error {
-	var images []string
-	if len(imagePaths) > 0 {
-		images = imagePaths[0]
+func getVoiceSignedURL(path string) (string, error) {
+	baseURL := os.Getenv("SUPABASE_URL") + "/storage/v1"
+	secret := os.Getenv("SUPABASE_SERVICE_ROLE")
+	voiceBucket := "redflagged-voices" // Hardcoded voice bucket name
+
+	if baseURL == "" || secret == "" {
+		return "", fmt.Errorf("не заданы переменные окружения SUPABASE_URL / SERVICE_ROLE")
 	}
+
+	requestBody := map[string]interface{}{
+		"expiresIn": 3600, // 1 час
+	}
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", err
+	}
+
+	url := fmt.Sprintf("%s/object/sign/%s/%s", baseURL, voiceBucket, strings.TrimPrefix(path, "/"))
+
+	fmt.Printf("Voice signed URL: %s\n", url)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("supabase вернул %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		SignedURL string `json:"signedURL"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", err
+	}
+
+	return baseURL + response.SignedURL, nil
+}
+
+// saveMessage сохраняет сообщение в таблице messages (для системных сообщений без голоса).
+func saveMessage(chatID, role, content string, imagePaths []string, voicePaths ...[]string) error {
+	var voices []string
+	if len(voicePaths) > 0 {
+		voices = voicePaths[0]
+	}
+	return saveMessageWithTranscription(chatID, role, content, imagePaths, voices, "")
+}
+
+// saveMessageWithTranscription сохраняет сообщение с уже готовой транскрипцией.
+func saveMessageWithTranscription(chatID, role, content string, imagePaths, voicePaths []string, voiceTranscription string) error {
 	_, err := db.Exec(`
-        INSERT INTO messages (chat_id, role, content, image_paths)
-        VALUES ($1, $2, $3, $4)
-    `, chatID, role, content, pq.Array(images))
+        INSERT INTO messages (chat_id, role, content, image_paths, voice_paths, voice_transcription)
+        VALUES ($1, $2, $3, $4, $5, $6)
+    `, chatID, role, content, pq.Array(imagePaths), pq.Array(voicePaths), voiceTranscription)
 	if err != nil {
 		return fmt.Errorf("ошибка сохранения сообщения: %v", err)
 	}
@@ -363,7 +453,7 @@ func createChat(userID, title string) (string, error) {
 // getChatMessages возвращает все сообщения из чата, отсортированные по времени (по возрастанию). Если includeSystem == false, исключает system-сообщения.
 func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
 	query := `
-        SELECT role, content, image_paths
+        SELECT role, content, image_paths, voice_paths, voice_transcription, created_at
         FROM messages
         WHERE chat_id = $1`
 	if !includeSystem {
@@ -380,7 +470,7 @@ func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		err := rows.Scan(&m.Role, &m.Content, pq.Array(&m.ImagePaths))
+		err := rows.Scan(&m.Role, &m.Content, pq.Array(&m.ImagePaths), pq.Array(&m.VoicePaths), &m.VoiceTranscription, &m.Timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования сообщения: %v", err)
 		}
@@ -390,4 +480,126 @@ func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
 		return nil, fmt.Errorf("ошибка обхода строк: %v", err)
 	}
 	return msgs, nil
+}
+
+// transcribeVoiceFiles transcribes multiple voice files and returns their combined text
+func transcribeVoiceFiles(voicePaths []string) (string, error) {
+	if len(voicePaths) == 0 {
+		return "", nil
+	}
+
+	var transcriptions []string
+	for i, path := range voicePaths {
+		signedURL, err := getVoiceSignedURL(path)
+		if err != nil {
+			log.Printf("Ошибка получения voice signed URL для голоса %s: %v", path, err)
+			continue
+		}
+
+		transcription, err := transcribeVoiceFromURL(signedURL)
+		if err != nil {
+			log.Printf("Ошибка транскрипции голоса %s: %v", path, err)
+			continue
+		}
+
+		if transcription != "" {
+			transcriptions = append(transcriptions, fmt.Sprintf("[Голосовое сообщение %d]: %s", i+1, transcription))
+		}
+	}
+
+	if len(transcriptions) == 0 {
+		return "", fmt.Errorf("не удалось транскрибировать ни одного голосового сообщения")
+	}
+
+	return strings.Join(transcriptions, "\n"), nil
+}
+
+// transcribeVoiceFromURL downloads and transcribes audio from URL
+func transcribeVoiceFromURL(audioURL string) (string, error) {
+	openaiAPIKey := os.Getenv("OPENAI_API_KEY")
+	if openaiAPIKey == "" {
+		return "", fmt.Errorf("сервер не настроен (отсутствует API ключ)")
+	}
+
+	// Скачиваем аудиофайл
+	resp, err := http.Get(audioURL)
+	if err != nil {
+		return "", fmt.Errorf("ошибка скачивания аудио: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ошибка скачивания аудио, статус: %d", resp.StatusCode)
+	}
+
+	audioData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("ошибка чтения аудиоданных: %v", err)
+	}
+
+	// Создаем multipart form для отправки в OpenAI
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+
+	// Добавляем модель
+	err = writer.WriteField("model", "whisper-1")
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания поля model: %v", err)
+	}
+
+	// Добавляем аудиофайл
+	fileWriter, err := writer.CreateFormFile("file", "audio.m4a")
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания поля file: %v", err)
+	}
+
+	_, err = fileWriter.Write(audioData)
+	if err != nil {
+		return "", fmt.Errorf("ошибка записи аудиоданных: %v", err)
+	}
+
+	err = writer.Close()
+	if err != nil {
+		return "", fmt.Errorf("ошибка закрытия writer: %v", err)
+	}
+
+	// Создаем HTTP запрос
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", &requestBody)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания запроса: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+openaiAPIKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	// Выполняем запрос
+	client := &http.Client{}
+	resp2, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ошибка выполнения запроса к OpenAI: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	// Читаем ответ
+	body, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		return "", fmt.Errorf("ошибка чтения ответа: %v", err)
+	}
+
+	if resp2.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("OpenAI вернул ошибку %d: %s", resp2.StatusCode, string(body))
+	}
+
+	// Парсим JSON ответ
+	var transcriptionResponse struct {
+		Text string `json:"text"`
+	}
+
+	err = json.Unmarshal(body, &transcriptionResponse)
+	if err != nil {
+		return "", fmt.Errorf("ошибка парсинга JSON ответа: %v", err)
+	}
+
+	log.Printf("Транскрипция успешно выполнена: %s", transcriptionResponse.Text)
+	return transcriptionResponse.Text, nil
 }
