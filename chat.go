@@ -470,10 +470,21 @@ func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		err := rows.Scan(&m.Role, &m.Content, pq.Array(&m.ImagePaths), pq.Array(&m.VoicePaths), &m.VoiceTranscription, &m.Timestamp)
+		var voiceTranscription sql.NullString
+		var timestamp sql.NullTime
+		err := rows.Scan(&m.Role, &m.Content, pq.Array(&m.ImagePaths), pq.Array(&m.VoicePaths), &voiceTranscription, &timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования сообщения: %v", err)
 		}
+		
+		if voiceTranscription.Valid {
+			m.VoiceTranscription = voiceTranscription.String
+		}
+		
+		if timestamp.Valid {
+			m.Timestamp = timestamp.Time.Format("2006-01-02T15:04:05Z")
+		}
+		
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
