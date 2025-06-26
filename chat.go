@@ -496,7 +496,7 @@ func transcribeVoiceFiles(voicePaths []string) (string, error) {
 	}
 
 	var transcriptions []string
-	for i, path := range voicePaths {
+	for _, path := range voicePaths {
 		signedURL, err := getVoiceSignedURL(path)
 		if err != nil {
 			log.Printf("Ошибка получения voice signed URL для голоса %s: %v", path, err)
