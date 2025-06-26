@@ -84,7 +84,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.VoicePaths) > 0 && paidLeft == 0 {
-		writeError(w, "voice_not_allowed_for_free", "Голосовые сообщения доступны только при наличии платных сообщений", nil, nil)
+		writeError(w, "images_not_allowed_for_free", "Голосовые сообщения доступны только при наличии платных сообщений", nil, nil)
 		return
 	}
 
@@ -230,12 +230,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	var model string
-	if paidLeft > 0 {
-		model = "gpt-4o"
-	} else {
-		model = "gpt-3.5-turbo"
-	}
+	var model string = "gpt-4o"
 
 	visionReq := VisionRequest{
 		Model: model,
@@ -477,7 +472,8 @@ func getChatMessages(chatID string, includeSystem bool) ([]Message, error) {
 			return nil, fmt.Errorf("ошибка сканирования сообщения: %v", err)
 		}
 		
-		if voiceTranscription.Valid {
+		// Only include voice transcription for internal processing (includeSystem=true)
+		if voiceTranscription.Valid && includeSystem {
 			m.VoiceTranscription = voiceTranscription.String
 		}
 		
@@ -514,7 +510,7 @@ func transcribeVoiceFiles(voicePaths []string) (string, error) {
 		}
 
 		if transcription != "" {
-			transcriptions = append(transcriptions, fmt.Sprintf("[Голосовое сообщение %d]: %s", i+1, transcription))
+			transcriptions = append(transcriptions, transcription)
 		}
 	}
 
