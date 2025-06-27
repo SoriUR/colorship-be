@@ -65,8 +65,12 @@ func handleRevenueCatEvent(data []byte) {
 			switch productID {
 			case "com.40apps.redflagged.messages.10":
 				count = 10
+			case "com.40apps.redflagged.messages.20":
+				count = 20
 			case "com.40apps.redflagged.messages.100":
 				count = 100
+			case "com.40apps.redflagged.messages.1001":
+				count = 1000
 			default:
 				log.Printf("Неизвестный product_id: %s", productID)
 				continue
