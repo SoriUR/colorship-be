@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
 )
@@ -54,6 +55,13 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "json_decode_error", "Неверный формат JSON", nil, err)
 		return
 	}
+	
+	// Validate UTF-8 encoding
+	if !utf8.ValidString(req.Prompt) {
+		writeError(w, "invalid_encoding", "Текст содержит некорректную кодировку UTF-8", nil, nil)
+		return
+	}
+	
 	log.Println("Получен POST-запрос:", req)
 
 	userID, err := getUserIDFromRequest(r)
@@ -95,8 +103,9 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		if title == "" {
 			title = "New Chat"
 		}
-		if len(title) > 50 {
-			title = title[:50]
+		// Безопасное обрезание UTF-8 строки
+		if utf8.RuneCountInString(title) > 50 {
+			title = truncateUTF8(title, 50)
 		}
 		newChatID, err := createChat(userID, title)
 		if err != nil {
@@ -609,4 +618,17 @@ func transcribeVoiceFromURL(audioURL string) (string, error) {
 
 	log.Printf("Транскрипция успешно выполнена: %s", transcriptionResponse.Text)
 	return transcriptionResponse.Text, nil
+}
+
+// truncateUTF8 safely truncates a UTF-8 string to the specified number of runes
+func truncateUTF8(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	
+	runes := []rune(s)
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+	}
+	return string(runes)
 }
