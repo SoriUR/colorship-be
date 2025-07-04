@@ -101,7 +101,14 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		// Новый чат
 		title := req.Prompt
 		if title == "" {
-			title = "New Chat"
+			// Если нет текста, но есть голосовые сообщения или изображения
+			if len(req.VoicePaths) > 0 {
+				title = "Voice recorded"
+			} else if len(req.ImagePaths) > 0 {
+				title = "Attached image"
+			} else {
+				title = "New Chat"
+			}
 		}
 		// Безопасное обрезание UTF-8 строки
 		if utf8.RuneCountInString(title) > 50 {
@@ -120,7 +127,6 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		systemContent := string(systemBytes)
-		log.Printf("Загруженный system prompt: %s", systemContent)
 
 		if err := saveMessage(chatID, "system", systemContent, nil); err != nil {
 			writeError(w, "db_error", "Ошибка сохранения system-сообщения", nil, err)
@@ -286,15 +292,13 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("vision JSON: %s", string(jsonData))
-	log.Printf("OpenAI raw response: %s", string(body))
-
 	if len(openaiResp.Choices) == 0 {
 		writeError(w, "openai_error", "OpenAI не вернул ответа", nil, nil)
 		return
 	}
 
 	assistantMsg := openaiResp.Choices[0].Message.Content
+	log.Printf("%s", assistantMsg)
 	if err := saveMessage(chatID, "assistant", assistantMsg, nil); err != nil {
 		writeError(w, "db_error", "Ошибка сохранения сообщения ассистента", nil, err)
 		return
