@@ -23,7 +23,7 @@ func signUpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = db.Exec(`insert into user_credits (user_id) values ($1)`, userID)
+	_, err = db.Exec(`insert into user_credits (user_id, count) values ($1, 5)`, userID)
 	if err != nil {
 		http.Error(w, "failed to initialize user credits", http.StatusInternalServerError)
 		log.Println("create user_credits error:", err)

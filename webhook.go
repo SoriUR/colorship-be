@@ -147,9 +147,8 @@ func addPaidMessages(userID string, count int) error {
 	_, err := db.Exec(`
 		update user_credits
 		set
-			paid_messages_left = paid_messages_left + $1,
+			count = count + $1,
 			is_using_paid = true,
-			free_messages_left = case when free_messages_left > 0 then 0 else free_messages_left end,
 			updated_at = now()
 		where user_id = $2
 	`, count, userID)

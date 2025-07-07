@@ -70,31 +70,22 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var freeLeft, paidLeft int
+	var count int
 	err = db.QueryRow(`
-		SELECT free_messages_left, paid_messages_left
+		SELECT count
 		FROM user_credits
 		WHERE user_id = $1
-	`, userID).Scan(&freeLeft, &paidLeft)
+	`, userID).Scan(&count)
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка получения лимита сообщений")
 		writeError(w, "db_error", "Ошибка получения лимита сообщений", nil, err)
 		return
 	}
-	if freeLeft <= 0 && paidLeft <= 0 {
+	if count <= 0 {
 		writeError(w, "no_messages", "У вас закончились все доступные сообщения", nil, nil)
 		return
 	}
 
-	if len(req.ImagePaths) > 0 && paidLeft == 0 {
-		writeError(w, "images_not_allowed_for_free", "Изображения доступны только при наличии платных сообщений", nil, nil)
-		return
-	}
-
-	if len(req.VoicePaths) > 0 && paidLeft == 0 {
-		writeError(w, "images_not_allowed_for_free", "Голосовые сообщения доступны только при наличии платных сообщений", nil, nil)
-		return
-	}
 
 	chatID := req.ChatID
 	if chatID == "" {
@@ -305,11 +296,7 @@ func handleChatPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Обновляем счётчик сообщений в user_credits
-	if paidLeft > 0 {
-		_, err = db.Exec(`UPDATE user_credits SET paid_messages_left = paid_messages_left - 1 WHERE user_id = $1`, userID)
-	} else {
-		_, err = db.Exec(`UPDATE user_credits SET free_messages_left = free_messages_left - 1 WHERE user_id = $1`, userID)
-	}
+	_, err = db.Exec(`UPDATE user_credits SET count = count - 1 WHERE user_id = $1`, userID)
 	if err != nil {
 		log.Println("handleChatPost error: Ошибка обновления счётчика сообщений")
 		writeError(w, "db_error", "Ошибка обновления счётчика сообщений", nil, err)
